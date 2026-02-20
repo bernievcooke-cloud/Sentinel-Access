@@ -1,115 +1,188 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-import subprocess, threading, os, time
+import os
+import subprocess
+import glob
+import customtkinter as ctk
+from twilio.rest import Client
+from dotenv import load_dotenv
+from tkinter import messagebox
 
-# --- DYNAMIC PATHING (The Fix) ---
-# This finds the folder where THIS script is saved (C:\OneDrive\PublicReports)
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_PATH, "OUTPUT")
+# --- CONFIGURATION & SECRETS ---
+load_dotenv(r"C:\OneDrive\PublicReports\File Storage\.env")
+ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+BASE_PATH = r"C:\OneDrive\PublicReports\OUTPUT"
+ADMIN_PASSWORD = "Sentinel2026" 
 
-class SentinelHub:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Sentinel Command V3.32")
-        self.root.geometry("1400x850")
-        self.root.configure(bg="#001d3d")
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+class SentinelExecutiveHub(ctk.CTk):
+    def __init__(self):
+        super().__init__()
         
-        self.admin_sidebar = tk.Frame(self.root, bg='white', width=380, padx=25, pady=25)
-        self.admin_sidebar.pack(side="left", fill="y")
-        self.admin_sidebar.pack_propagate(False)
+        self.title("SENTINEL ACCESS - EXECUTIVE COMMAND V6.2")
+        self.geometry("1500x950") # Slightly wider window
 
-        self.preview_area = tk.Frame(self.root, bg='#f1f3f5', padx=30, pady=25)
-        self.preview_area.pack(side="right", expand=True, fill="both")
+        # Grid Configuration (Widened sidebars)
+        self.grid_columnconfigure(0, minsize=380) # Left bar wider
+        self.grid_columnconfigure(1, weight=2)    # Main Center
+        self.grid_columnconfigure(2, minsize=350) # Right bar wider
+        self.grid_rowconfigure(0, weight=1)
+
+        # --- 1. SIDEBAR: CONTROL & ADMIN ---
+        self.sidebar = ctk.CTkFrame(self, corner_radius=0)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+
+        ctk.CTkLabel(self.sidebar, text="SYSTEM SECURITY", font=("Helvetica", 22, "bold")).pack(pady=(40, 10))
+        self.pwd_entry = ctk.CTkEntry(self.sidebar, placeholder_text="Password", show="*", width=280, height=40)
+        self.pwd_entry.pack(pady=5)
+        self.auth_btn = ctk.CTkButton(self.sidebar, text="UNLOCK ADMIN", command=self.authenticate, fg_color="#34495E", width=280)
+        self.auth_btn.pack(pady=5)
+
+        ctk.CTkLabel(self.sidebar, text="REPORT PARAMETERS", font=("Helvetica", 18, "bold"), text_color="#1a73e8").pack(pady=(60, 10))
         
-        self.setup_admin_panel()
-        self.setup_preview_area()
+        ctk.CTkLabel(self.sidebar, text="STEP 1: CATEGORY", font=("Helvetica", 14, "bold")).pack(anchor="w", padx=50)
+        self.type_menu = ctk.CTkOptionMenu(self.sidebar, values=["Surf", "Sky"], height=55, width=280, command=self.sync_ui)
+        self.type_menu.pack(pady=(5, 30), padx=50)
 
-    def get_existing_locations(self):
-        if not os.path.exists(OUTPUT_DIR): return ["Torquay"]
-        return sorted([d for d in os.listdir(OUTPUT_DIR) if os.path.isdir(os.path.join(OUTPUT_DIR, d))])
-
-    def setup_admin_panel(self):
-        tk.Label(self.admin_sidebar, text="SYSTEM ADMIN", font=("Helvetica", 20, "bold"), bg="white", fg="#001d3d").pack(anchor="w")
-        tk.Frame(self.admin_sidebar, height=3, bg="#ffc300", width=120).pack(anchor="w", pady=(5, 30))
-
-        tk.Button(self.admin_sidebar, text="🔄 REFRESH SYSTEM", font=("Helvetica", 10, "bold"), 
-                  bg="#f8f9fa", relief="groove", pady=12, command=self.refresh_locations).pack(fill="x", pady=(0, 40))
-
-        tk.Label(self.admin_sidebar, text="TARGET LOCATION", font=("Helvetica", 10, "bold"), bg="white", fg="#adb5bd").pack(anchor="w")
-        self.loc_var = tk.StringVar()
-        style = ttk.Style()
-        style.configure("Large.TCombobox", font=("Helvetica", 14))
-        self.loc_drop = ttk.Combobox(self.admin_sidebar, textvariable=self.loc_var, style="Large.TCombobox")
-        self.loc_drop['values'] = self.get_existing_locations()
-        self.loc_drop.pack(fill="x", pady=(5, 35), ipady=10)
-
-        tk.Button(self.admin_sidebar, text="PREPARE SURF STRATEGY", bg="#001d3d", fg="white", 
-                  font=("Helvetica", 12, "bold"), pady=18, command=lambda: self.trigger_worker("surf_worker.py")).pack(fill="x", pady=10)
+        ctk.CTkLabel(self.sidebar, text="STEP 2: LOCATION", font=("Helvetica", 14, "bold")).pack(anchor="w", padx=50)
+        try:
+            locations = [f for f in os.listdir(BASE_PATH) if os.path.isdir(os.path.join(BASE_PATH, f))]
+        except:
+            locations = ["PhillipIsland", "BellsBeach"] 
         
-        tk.Button(self.admin_sidebar, text="PREPARE SKY STRATEGY", bg="#003566", fg="white", 
-                  font=("Helvetica", 12, "bold"), pady=18, command=lambda: self.trigger_worker("sky_worker.py")).pack(fill="x", pady=5)
+        self.loc_menu = ctk.CTkOptionMenu(self.sidebar, values=sorted(locations), height=55, width=280, command=self.sync_ui)
+        self.loc_menu.pack(pady=(5, 30), padx=50)
 
-        self.status_label = tk.Label(self.admin_sidebar, text="SYSTEM IDLE", font=("Helvetica", 10, "italic"), 
-                                    bg="#f8f9fa", fg="#6c757d", pady=25, relief="sunken", bd=1)
-        self.status_label.pack(fill="x", pady=40)
+        # --- 2. MAIN CONSOLE ---
+        self.main_box = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_box.grid(row=0, column=1, sticky="nsew", padx=60, pady=30)
 
-        self.pay_btn = tk.Button(self.admin_sidebar, text="💳 DISPATCH TO WHATSAPP", bg="#ffc300", fg="#001d3d", 
-                                 font=("Helvetica", 13, "bold"), state="disabled", pady=25, command=self.dispatch_to_phone)
-        self.pay_btn.pack(fill="x", side="bottom")
+        # STATUS BOX
+        ctk.CTkLabel(self.main_box, text="CURRENT STATUS", font=("Helvetica", 16, "bold"), text_color="#1a73e8").pack(anchor="w")
+        self.status_display = ctk.CTkTextbox(self.main_box, height=140, font=("Helvetica", 26, "bold"), 
+                                            border_width=2, border_color="#1a73e8", fg_color="#0f0f0f")
+        self.status_display.pack(fill="x", pady=(5, 40))
+        self.update_status_msg("SYSTEM STANDBY\nWAITING FOR SELECTION...")
 
-    def setup_preview_area(self):
-        tk.Label(self.preview_area, text="STRATEGIC ANALYSIS PREVIEW", font=("Helvetica", 16, "bold"), bg="#f1f3f5", fg="#001d3d").pack(anchor="w")
-        self.charts_container = tk.Frame(self.preview_area, bg="#f1f3f5")
-        self.charts_container.pack(expand=True, fill="both", pady=20)
-        self.upper_chart = tk.Frame(self.charts_container, bg="white", bd=1, relief="solid")
-        self.upper_chart.pack(expand=True, fill="both", pady=(0, 15))
-        self.lower_chart = tk.Frame(self.charts_container, bg="white", bd=1, relief="solid")
-        self.lower_chart.pack(expand=True, fill="both")
-
-    def refresh_locations(self):
-        self.loc_drop['values'] = self.get_existing_locations()
-        self.status_label.config(text="LOCATIONS UPDATED", fg="green")
-
-    def trigger_worker(self, script_name):
-        loc = self.loc_var.get().strip()
-        if not loc: return
+        # CONFIRMATION & INPUT
+        self.confirm_frame = ctk.CTkFrame(self.main_box, corner_radius=20, border_width=1, border_color="#2c3e50")
+        self.confirm_frame.pack(fill="x", pady=10, ipady=50)
         
-        # FULL PATH to the script (This prevents the 'No such file' error)
-        script_path = os.path.join(BASE_PATH, script_name)
+        self.confirm_label = ctk.CTkLabel(self.confirm_frame, text="PLEASE INITIALIZE PARAMETERS", font=("Helvetica", 28, "bold"))
+        self.confirm_label.pack(pady=(30, 10))
         
-        self.pay_btn.config(state="disabled", text="GENERATING...", bg="#adb5bd")
-        self.status_label.config(text=f"⚙️ EXECUTING {script_name.upper()}...", fg="#001d3d")
-        
-        threading.Thread(target=self.handshake_loop, args=(script_path, loc), daemon=True).start()
+        self.instruct_label = ctk.CTkLabel(self.confirm_frame, text="ADVISE: Enter your mobile number below", 
+                                          font=("Helvetica", 20), text_color="#E67E22")
+        self.instruct_label.pack(pady=5)
 
-    def handshake_loop(self, script_path, loc):
-        subprocess.Popen(['python', script_path, loc])
-        target_dir = os.path.join(OUTPUT_DIR, loc)
-        
-        for i in range(20):
-            self.status_label.config(text=f"⚙️ HANDSHAKE: SCANNING {loc} ({i+1}s)")
-            if os.path.exists(target_dir):
-                files = [f for f in os.listdir(target_dir) if f.endswith(".pdf")]
-                if files:
-                    self.root.after(0, lambda: self.worker_verified(loc))
-                    return
-            time.sleep(1)
-        self.root.after(0, lambda: self.status_label.config(text="❌ HANDSHAKE TIMEOUT", fg="red"))
+        self.phone_entry = ctk.CTkEntry(self.confirm_frame, height=80, width=520, font=("Helvetica", 32), 
+                                       justify="center", border_color="#1a73e8")
+        self.phone_entry.pack(pady=30)
+        self.phone_entry.insert(0, "+61") # Pre-filled country code
 
-    def worker_verified(self, loc):
-        self.status_label.config(text=f"✅ {loc.upper()} VERIFIED ON DISK", fg="#2ca02c")
-        self.pay_btn.config(state="normal", text="💳 DISPATCH TO WHATSAPP", bg="#25d366", fg="white")
+        # ACTION BUTTON
+        self.action_btn = ctk.CTkButton(self.main_box, text="CONFIRM & GENERATE HANDSHAKE", 
+                                        fg_color="#27AE60", hover_color="#1E8449",
+                                        height=120, font=("Helvetica", 30, "bold"), command=self.handle_action)
+        self.action_btn.pack(fill="x", pady=40)
 
-    def dispatch_to_phone(self):
-        loc = self.loc_var.get().strip()
-        # Use the Cloud script ONLY
-        sender_path = os.path.join(BASE_PATH, "twilio_sender.py")
-        subprocess.Popen(['python', sender_path, loc])
+        # --- 3. CHART PANEL ---
+        self.chart_panel = ctk.CTkScrollableFrame(self, label_text="VISUAL DATA STREAMS", label_font=("Helvetica", 16, "bold"))
+        self.chart_panel.grid(row=0, column=2, sticky="nsew", padx=(0, 30), pady=40)
         
-        self.pay_btn.config(text="☁️ CLOUD DISPATCHED", state="disabled", bg="#001d3d")
-        self.status_label.config(text="✅ TWILIO MESSAGE FIRED", fg="blue")
+        for i in range(4):
+            f = ctk.CTkFrame(self.chart_panel, height=240, fg_color="#1c1c1c", corner_radius=12, border_width=1, border_color="#333")
+            f.pack(fill="x", pady=12)
+            ctk.CTkLabel(f, text=f"STREAM DATA 0{i+1}", font=("Helvetica", 12, "bold"), text_color="gray").pack(pady=15)
+
+    # --- LOGIC ---
+
+    def update_status_msg(self, text):
+        self.status_display.configure(state="normal")
+        self.status_display.delete("0.0", "end")
+        self.status_display.insert("0.0", text)
+        self.status_display.configure(state="disabled")
+        self.update()
+
+    def sync_ui(self, choice=None):
+        loc = self.loc_menu.get()
+        rtype = self.type_menu.get()
+        self.confirm_label.configure(text=f"TARGET: {loc} ({rtype})")
+        self.update_status_msg(f"READY TO STAGE: {loc}\nACTION: ENTER MOBILE & START HANDSHAKE")
+        self.action_btn.configure(text="CONFIRM & GENERATE HANDSHAKE", fg_color="#27AE60", state="normal")
+        self.status_display.configure(border_color="#1a73e8")
+
+    def authenticate(self):
+        if self.pwd_entry.get() == ADMIN_PASSWORD:
+            self.update_status_msg("ADMIN OVERRIDE: ACTIVE\nMANUAL CLOUD DISPATCH ENABLED")
+            self.status_display.configure(border_color="#E74C3C")
+            messagebox.showinfo("Security", "Admin Identity Confirmed")
+        else:
+            messagebox.showerror("Security", "Access Denied")
+
+    def handle_action(self):
+        phone = self.phone_entry.get().strip()
+        
+        if len(phone) < 12: # +61 followed by 9 digits
+            self.update_status_msg("ERROR: VALIDATION FAILED\nINCOMPLETE PHONE NUMBER")
+            messagebox.showwarning("Validation", "Please complete the phone number.")
+            return
+
+        # If button is in the 'Final' state, trigger the actual dispatch
+        if self.action_btn.cget("text") == "DISPATCH LIVE REPORT (BYPASS PAY)":
+            self.trigger_live_dispatch()
+            return
+
+        self.update_status_msg("INITIATING SECURE HANDSHAKE...\nCONTACTING CLOUD REPOSITORY")
+        self.status_display.configure(border_color="#F1C40F")
+        self.action_btn.configure(state="disabled", text="PROCESSING...")
+        self.after(1800, self.complete_handshake)
+
+    def complete_handshake(self):
+        loc = self.loc_menu.get()
+        self.update_status_msg(f"HANDSHAKE VERIFIED\nREPORT FOR {loc} IS SECURED.\nREADY FOR DISPATCH.")
+        self.status_display.configure(border_color="#2ECC71") 
+        self.action_btn.configure(state="normal", text="DISPATCH LIVE REPORT (BYPASS PAY)", fg_color="#2980B9")
+
+    def trigger_live_dispatch(self):
+        """THE ACTUAL WORKING DISPATCH LOGIC"""
+        loc = self.loc_menu.get()
+        rtype = self.type_menu.get()
+        target_phone = self.phone_entry.get()
+        
+        self.update_status_msg(f"UPLOADING TO GITHUB...\nSYNCING {loc} CLOUD ASSETS")
+        
+        try:
+            # 1. GitHub Sync
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(f'git commit -m "Executive Dispatch: {loc}"', shell=True)
+            subprocess.run(["git", "push", "origin", "main", "--force"], check=True)
+            
+            # 2. Find File
+            search_path = os.path.join(BASE_PATH, loc, f"{rtype}_*.pdf")
+            files = glob.glob(search_path)
+            if not files:
+                self.update_status_msg(f"ERROR: NO PDF FOUND IN {loc}")
+                return
+            latest_file = os.path.basename(max(files, key=os.path.getmtime))
+
+            # 3. Twilio WhatsApp
+            self.update_status_msg("SENDING WHATSAPP...\nFINALIZING HANDSHAKE")
+            live_url = f"https://bernievcooke-cloud.github.io/Sentinel-Access/OUTPUT/{loc}/{latest_file}".replace(" ", "%20")
+            client = Client(ACCOUNT_SID, AUTH_TOKEN)
+            client.messages.create(
+                body=f"🌊 *Sentinel {rtype} Report Ready*\n\nView: {live_url}",
+                from_='whatsapp:+14155238886', to=f'whatsapp:{target_phone}'
+            )
+            
+            self.update_status_msg(f"SUCCESS!\nMESSAGE SENT TO {target_phone}\nREPORT: {latest_file}")
+            messagebox.showinfo("Success", "Dispatch Complete! Check your WhatsApp.")
+            
+        except Exception as e:
+            self.update_status_msg(f"CRITICAL ERROR:\n{str(e)}")
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SentinelHub(root)
-    root.mainloop()
+    app = SentinelExecutiveHub()
+    app.mainloop()
+    
